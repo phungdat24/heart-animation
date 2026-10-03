@@ -1,0 +1,42 @@
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: #050505;
+}
+
+.box {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: min(750px, 100vmin);
+  height: min(750px, 100vmin);
+  transform: translate(-50%, -50%);
+  z-index: 2;            /* trái tim nằm trên */
+}
+
+#pinkboard {
+  display: block;
+  width: 100%;
+  height: 100%;
+  animation: beat 1.2s infinite;
+}
+
+/* Canvas điện tim phủ toàn màn hình, không bị scale theo trái tim */
+#ecg {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 1;            /* điện tim nằm dưới */
+}
+
+@keyframes beat {
+  0%   { transform: scale(1); }
+  30%  { transform: scale(.8); }
+  60%  { transform: scale(1.2); }
+  100% { transform: scale(1); }
+}

@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MINH IT</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="box">
+    <canvas id="pinkboard"></canvas>
+  </div>
+  <canvas id="ecg"></canvas>
+
+<script>
+/* ================= Cài đặt trái tim hạt ================= */
+var settings = {
+  color: '#ff9aa2',    // màu chung cho trái tim và đường điện tim
+  bgColor: '#050505',  // phải trùng màu nền trong style.css
+  maskOffset: 45,      // độ nở của mặt nạ so với đường viền gốc (px)
+  particles: {
+    length: 10000,
+    duration: 4,
+    velocity: 80,
+    effect: -1.3,
+    size: 8
+  },
+  centerGap: 3
+};
+
+/* ================= Point ================= */
+var Point = (function () {
+  function Point(x, y) {
+    this.x = (typeof x !== 'undefined') ? x : 0;
+    this.y = (typeof y !== 'undefined') ? y : 0;
+  }
+  Point.prototype.clone = function () { return new Point(this.x, this.y); };
+  Point.prototype.length = function (length) {
+    if (typeof length == 'undefined') return Math.sqrt(this.x * this.x + this.y * this.y);
+    this.normalize();
+    this.x *= length;
+    this.y *= length;
+    return this;
+  };
+  Point.prototype.normalize = function () {
+    var length = this.length();
+    this.x /= length;
+    this.y /= length;
+    return this;
+  };
+  return Point;
+})();
+
+/* ================= Particle ================= */
+var Particle = (function () {
+  function Particle() {
+    this.position = new Point();
+    this.velocity = new Point();
+    this.acceleration = new Point();
+    this.age = 0;
+  }
+  Particle.prototype.initialize = function (x, y, dx, dy) {
+    this.position.x = x;
+    this.position.y = y;
+    this.velocity.x = dx;
+    this.velocity.y = dy;
+    this.acceleration.x = dx * settings.particles.effect;
+    this.acceleration.y = dy * settings.particles.effect;
+    this.age = 0;
+  };
+  Particle.prototype.update = function (dt) {
+    this.position.x += this.velocity.x * dt;
+    this.position.y += this.velocity.y * dt;
+    this.velocity.x += this.acceleration.x * dt;
+    this.velocity.y += this.acceleration.y * dt;
+    this.age += dt;
+  };
+  Particle.prototype.draw = function (context, image) {
+    function ease(t) { return (--t) * t * t + 1; }
+    var size = image.width * ease(this.age / settings.particles.duration);
+    context.globalAlpha = 1 - this.age / settings.particles.duration;
+    context.drawImage(image, this.position.x - size / 2, this.position.y - size / 2, size, size);
+  };
+  return Particle;
+})();
+
+/* ================= ParticlePool ================= */
+var ParticlePool = (function () {
+  var particles, firstActive = 0, firstFree = 0, duration = settings.particles.duration;
+
+  function ParticlePool(length) {
+    particles = new Array(length);
+    for (var i = 0; i < particles.length; i++) particles[i] = new Particle();
+  }
+  ParticlePool.prototype.add = function (x, y, dx, dy) {
+    particles[firstFree].initialize(x, y, dx, dy);
+    firstFree++;
+    if (firstFree == particles.length) firstFree = 0;
+    if (firstActive == firstFree) firstActive++;
+    if (firstActive == particles.length) firstActive = 0;
+  };
+  ParticlePool.prototype.update = function (dt) {
+    var i;
+    if (firstActive < firstFree) {
+      for (i = firstActive; i < firstFree; i++) particles[i].update(dt);
+    }
+    if (firstFree < firstActive) {
+      for (i = firstActive; i < particles.length; i++) particles[i].update(dt);
+      for (i = 0; i < firstFree; i++) particles[i].update(dt);
+    }
+    while (particles[firstActive].age >= duration && firstActive != firstFree) {
+      firstActive++;
+      if (firstActive == particles.length) firstActive = 0;
+    }
+  };
+  ParticlePool.prototype.draw = function (context, image) {
+    var i;
+    if (firstActive < firstFree) {
+      for (i = firstActive; i < firstFree; i++) particles[i].draw(context, image);
+    }
+    if (firstFree < firstActive) {
+      for (i = firstActive; i < particles.length; i++) particles[i].draw(context, image);
+      for (i = 0; i < firstFree; i++) particles[i].draw(context, image);
+    }
+  };
+  return ParticlePool;
+})();
+
+/* ================= Trái tim hạt ================= */
+(function (canvas) {
+  var context = canvas.getContext('2d'),
+      particles = new ParticlePool(settings.particles.length),
+      particleRate = settings.particles.length / settings.particles.duration,
+      time;
+
+  function pointOnHeart(t) {
+    return new Point(
+      160 * Math.pow(Math.sin(t), 3),
+      130 * Math.cos(t) - 50 * Math.cos(2 * t) - 20 * Math.cos(3 * t) - 10 * Math.cos(4 * t) + 25
+    );
+  }
+
+  // Bảng chiều dài cung: giúp chọn điểm ĐỀU dọc đường viền,
+  // tránh dồn hạt vào trục giữa (nguyên nhân của đường thẳng đứng)
+  var arcTable = (function () {
+    var N = 2000, cum = [0], prev = pointOnHeart(-Math.PI);
+    for (var i = 1; i <= N; i++) {
+      var p = pointOnHeart(-Math.PI + 2 * Math.PI * i / N);
+      cum[i] = cum[i - 1] + Math.hypot(p.x - prev.x, p.y - prev.y);
+      prev = p;
+    }
+    return cum;
+  })();
+
+  function randomT() {
+    var cum = arcTable, target = Math.random() * cum[cum.length - 1], lo = 0, hi = cum.length - 1;
+    while (hi - lo > 1) {
+      var mid = (lo + hi) >> 1;
+      if (cum[mid] < target) lo = mid; else hi = mid;
+    }
+    var f = (target - cum[lo]) / ((cum[hi] - cum[lo]) || 1);
+    return -Math.PI + 2 * Math.PI * (lo + f) / (cum.length - 1);
+  }
+
+  // Ảnh hạt hình trái tim nhỏ
+  var image = (function () {
+    var c = document.createElement('canvas'), ctx = c.getContext('2d');
+    c.width = settings.particles.size;
+    c.height = settings.particles.size;
+    function to(t) {
+      var p = pointOnHeart(t);
+      p.x = settings.particles.size / 2 + p.x * settings.particles.size / 350;
+      p.y = settings.particles.size / 2 - p.y * settings.particles.size / 350;
+      return p;
+    }
+    ctx.beginPath();
+    var t = -Math.PI, p = to(t);
+    ctx.moveTo(p.x, p.y);
+    while (t < Math.PI) {
+      t += 0.01;
+      p = to(t);
+      ctx.lineTo(p.x, p.y);
+    }
+    ctx.closePath();
+    ctx.fillStyle = settings.color;   // màu trái tim, đổi tại đây
+    ctx.fill();
+    var img = new Image();
+    img.src = c.toDataURL();
+    return img;
+  })();
+
+  // Mặt nạ trái tim đặc: che đường điện tim phía sau.
+// Các hạt bay ra ngoài đường viền nên đẩy mặt nạ nở ra một chút (maskOffset).
+var maskPoints = (function () {
+  var pts = [];
+  for (var t = -Math.PI; t <= Math.PI; t += 0.02) {
+    var p = pointOnHeart(t);
+    var d = p.clone().length(settings.maskOffset);
+    pts.push(new Point(p.x + d.x, p.y + d.y));
+  }
+  return pts;
+})();
+
+function drawMask() {
+  var cx = canvas.width / 2, cy = canvas.height / 2;
+  context.globalAlpha = 1;
+  context.fillStyle = settings.bgColor;
+  context.beginPath();
+  for (var i = 0; i < maskPoints.length; i++) {
+    var q = maskPoints[i];
+    if (i === 0) context.moveTo(cx + q.x, cy - q.y);
+    else context.lineTo(cx + q.x, cy - q.y);
+  }
+  context.closePath();
+  context.fill();
+}
+
+  function render() {
+    requestAnimationFrame(render);
+
+    var newTime = new Date().getTime() / 1000,
+        deltaTime = newTime - (time || newTime);
+    time = newTime;
+
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    drawMask();
+    var amount = particleRate * deltaTime;
+    for (var i = 0; i < amount; i++) {
+      var pos = pointOnHeart(randomT());
+      if (Math.abs(pos.x) < settings.centerGap) continue;   // bỏ hạt sát trục giữa
+      var dir = pos.clone().length(settings.particles.velocity);
+      particles.add(canvas.width / 2 + pos.x, canvas.height / 2 - pos.y, dir.x, -dir.y);
+    }
+
+    particles.update(deltaTime);
+    particles.draw(context, image);
+  }
+
+  function onResize() {
+    canvas.width = canvas.clientWidth;
+    canvas.height = canvas.clientHeight;
+  }
+  window.addEventListener('resize', onResize);
+
+  setTimeout(function () { onResize(); render(); }, 10);
+})(document.getElementById('pinkboard'));
+
+/* ================= Đường điện tim (ECG) ================= */
+(function () {
+  var canvas = document.getElementById('ecg'),
+      ctx = canvas.getContext('2d'),
+      heartCanvas = document.getElementById('pinkboard');
+
+  var COLOR = settings.color;   // hồng đào, đổi tại đây
+  var BEAT  = 1.2;         // chu kỳ 1 nhịp (giây), khớp animation CSS
+  var SPEED = 240;         // tốc độ quét (px/giây)
+  var GAP   = 50;          // khoảng trống phía trước đầu quét
+  var BANDS = 24;          // số dải mờ dần của đuôi
+
+  var W, H, dpr, samples, head = 0, acc = 0, phase = 0, last = null;
+
+  function gauss(p, c, w, a) { var d = (p - c) / w; return a * Math.exp(-d * d / 2); }
+
+  // Một nhịp tim p ∈ [0,1): sóng P, Q, R, S, T. Đỉnh R tại 0.6 (lúc tim phình to nhất)
+  function ecg(p) {
+    return gauss(p, 0.46, 0.020, 0.14)    // P
+         + gauss(p, 0.574, 0.006, -0.14)  // Q
+         + gauss(p, 0.60, 0.009, 1.0)     // R
+         + gauss(p, 0.628, 0.008, -0.30)  // S
+         + gauss(p, 0.78, 0.035, 0.26);   // T
+  }
+
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    W = Math.floor(window.innerWidth);
+    H = Math.floor(window.innerHeight);
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    samples = new Float32Array(W).fill(NaN);
+    head = 0;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // Đồng bộ pha với animation CSS của trái tim (nếu trình duyệt hỗ trợ)
+  function initialPhase() {
+    try {
+      var a = heartCanvas.getAnimations();
+      if (a.length && a[0].currentTime != null) {
+        return (Number(a[0].currentTime) % (BEAT * 1000)) / (BEAT * 1000);
+      }
+    } catch (e) {}
+    return 0;
+  }
+
+  function frame(now) {
+    requestAnimationFrame(frame);
+    var t = now / 1000;
+    if (last === null) { last = t; phase = initialPhase(); }
+    var dt = Math.min(t - last, 0.1);
+    last = t;
+
+    // Thêm các cột mới theo tốc độ quét
+    acc += dt * SPEED;
+    while (acc >= 1) {
+      acc -= 1;
+      head = (head + 1) % W;
+      phase = (phase + 1 / (SPEED * BEAT)) % 1;
+      samples[head] = ecg(phase);
+    }
+
+    // Vẽ
+    ctx.clearRect(0, 0, W, H);
+    var cy = H / 2, amp = Math.min(H * 0.2, 150), len = W - GAP;
+
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = COLOR;
+    ctx.shadowColor = COLOR;
+    ctx.shadowBlur = 14;
+
+    var prevX = null, prevY = null, curBand = -1;
+
+    for (var k = len - 1; k >= 0; k--) {          // từ cũ nhất đến mới nhất
+      var col = (head - k + W) % W, v = samples[col];
+
+      if (v !== v) {                               // chưa có dữ liệu
+        if (curBand >= 0) { ctx.stroke(); curBand = -1; }
+        prevX = null;
+        continue;
+      }
+      var x = col, y = cy - v * amp;
+
+      if (prevX !== null && col < prevX && curBand >= 0) {   // vòng qua mép phải
+        ctx.stroke(); curBand = -1; prevX = null;
+      }
+      if (prevX !== null) {
+        var b = Math.min(BANDS - 1, Math.floor(k / len * BANDS));
+        if (b !== curBand) {
+          if (curBand >= 0) ctx.stroke();
+          curBand = b;
+          ctx.globalAlpha = Math.max(0.08, 1 - (b + 0.5) / BANDS);
+          ctx.beginPath();
+          ctx.moveTo(prevX, prevY);
+        }
+        ctx.lineTo(x, y);
+      }
+      prevX = x; prevY = y;
+    }
+    if (curBand >= 0) ctx.stroke();
+
+    // Chấm sáng ở đầu quét
+    var hv = samples[head];
+    if (hv === hv) {
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#fff1ee';
+      ctx.beginPath();
+      ctx.arc(head, cy - hv * amp, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
